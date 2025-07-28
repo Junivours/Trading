@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Systemabhängigkeiten installieren
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
@@ -10,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     && git clone https://github.com/TA-Lib/ta-lib.git \
     && cd ta-lib \
+    && chmod +x autogen.sh \
     && ./autogen.sh \
     && ./configure --prefix=/usr/local \
     && make \
