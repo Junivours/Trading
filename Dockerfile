@@ -5,8 +5,12 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
     git \
+    automake \
+    libtool \
+    pkg-config \
     && git clone https://github.com/TA-Lib/ta-lib.git \
     && cd ta-lib \
+    && ./autogen.sh \
     && ./configure --prefix=/usr/local \
     && make \
     && make install \
@@ -14,7 +18,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf ta-lib \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Exportiere Include- und Library-Pfade, damit pip TA-Lib findet
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV CPATH=/usr/local/include
 
