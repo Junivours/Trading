@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# TA-Lib Bibliothek installieren (MUSS VOR requirements.txt passieren!)
+# TA-Lib C-Library installieren (vor Python requirements!)
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y \
     && cd .. && rm -rf ta-lib ta-lib-0.4.0-src.tar.gz \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# (Optional, aber empfohlen – für manche Plattformen)
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
 WORKDIR /app
