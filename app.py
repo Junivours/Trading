@@ -20,12 +20,39 @@ from functools import lru_cache
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import os
+from dotenv import load_dotenv
+import hmac
+import hashlib
+
+# Load environment variables
+load_dotenv()
 
 warnings.filterwarnings('ignore')
 
 # Setup optimized logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Binance API Configuration
+BINANCE_API_KEY = os.getenv('BINANCE_API_KEY', '')
+BINANCE_SECRET_KEY = os.getenv('BINANCE_SECRET_KEY', '')
+BINANCE_TESTNET = os.getenv('BINANCE_TESTNET', 'false').lower() == 'true'
+RATE_LIMIT_PER_MINUTE = int(os.getenv('RATE_LIMIT_REQUESTS_PER_MINUTE', '1200'))
+ENABLE_ACCOUNT_INFO = os.getenv('ENABLE_ACCOUNT_INFO', 'false').lower() == 'true'
+ENABLE_ORDER_BOOK_DEPTH = os.getenv('ENABLE_ORDER_BOOK_DEPTH', 'true').lower() == 'true'
+ENABLE_24H_TICKER_STATS = os.getenv('ENABLE_24H_TICKER_STATS', 'true').lower() == 'true'
+
+# Binance API URLs
+BINANCE_BASE_URL = "https://testnet.binance.vision/api" if BINANCE_TESTNET else "https://api.binance.com/api"
+BINANCE_SPOT_URL = f"{BINANCE_BASE_URL}/v3"
+
+# API Status
+API_AUTHENTICATED = bool(BINANCE_API_KEY and BINANCE_SECRET_KEY)
+if API_AUTHENTICATED:
+    logger.info("🔐 Binance API Keys found - Enhanced features enabled")
+else:
+    logger.info("📊 Using public Binance data - No API keys required")
 
 # ML Imports (optional)
 try:
@@ -74,10 +101,181 @@ class TurboAnalysisResult:
 # 🚀 TURBO PERFORMANCE ENGINE
 # ==========================================
 
+class BinanceDataFetcher:
+    """Enhanced Binance data fetcher with authenticated API support"""
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'TradingApp/1.0'})
+        if BINANCE_API_KEY:
+            self.session.headers.update({'X-MBX-APIKEY': BINANCE_API_KEY})
+        
+        # Rate limiting
+        self.last_request_time = 0
+        self.request_count = 0
+        self.request_window_start = time.time()
+        
+    def _create_signature(self, params: dict) -> str:
+        """Create HMAC SHA256 signature for authenticated requests"""
+        if not BINANCE_SECRET_KEY:
+            return ""
+        
+        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+        return hmac.new(
+            BINANCE_SECRET_KEY.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+    
+    def _rate_limit_check(self):
+        """Check and enforce rate limits"""
+        current_time = time.time()
+        
+        # Reset counter every minute
+        if current_time - self.request_window_start > 60:
+            self.request_count = 0
+            self.request_window_start = current_time
+        
+        # Check if we're hitting rate limits
+        if self.request_count >= RATE_LIMIT_PER_MINUTE:
+            sleep_time = 60 - (current_time - self.request_window_start)
+            if sleep_time > 0:
+                logger.warning(f"Rate limit reached, sleeping for {sleep_time:.2f} seconds")
+                time.sleep(sleep_time)
+                self.request_count = 0
+                self.request_window_start = time.time()
+        
+        # Small delay between requests
+        if current_time - self.last_request_time < 0.1:
+            time.sleep(0.1)
+        
+        self.request_count += 1
+        self.last_request_time = time.time()
+    
+    def get_enhanced_ticker_data(self, symbol: str) -> dict:
+        """Get enhanced 24hr ticker statistics (authenticated API feature)"""
+        if not ENABLE_24H_TICKER_STATS:
+            return {}
+        
+        try:
+            self._rate_limit_check()
+            url = f"{BINANCE_SPOT_URL}/ticker/24hr"
+            params = {"symbol": symbol}
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            return {
+                'volume': float(data.get('volume', 0)),
+                'quoteVolume': float(data.get('quoteVolume', 0)),
+                'openPrice': float(data.get('openPrice', 0)),
+                'highPrice': float(data.get('highPrice', 0)),
+                'lowPrice': float(data.get('lowPrice', 0)),
+                'prevClosePrice': float(data.get('prevClosePrice', 0)),
+                'priceChangePercent': float(data.get('priceChangePercent', 0)),
+                'weightedAvgPrice': float(data.get('weightedAvgPrice', 0)),
+                'count': int(data.get('count', 0))
+            }
+        except Exception as e:
+            logger.error(f"Error fetching enhanced ticker data: {e}")
+            return {}
+    
+    def get_order_book_depth(self, symbol: str, limit: int = 100) -> dict:
+        """Get order book depth (enhanced feature)"""
+        if not ENABLE_ORDER_BOOK_DEPTH:
+            return {}
+        
+        try:
+            self._rate_limit_check()
+            url = f"{BINANCE_SPOT_URL}/depth"
+            params = {"symbol": symbol, "limit": limit}
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Calculate order book metrics
+            bids = [[float(price), float(qty)] for price, qty in data.get('bids', [])]
+            asks = [[float(price), float(qty)] for price, qty in data.get('asks', [])]
+            
+            if bids and asks:
+                best_bid = bids[0][0] if bids else 0
+                best_ask = asks[0][0] if asks else 0
+                spread = best_ask - best_bid if best_bid and best_ask else 0
+                spread_percent = (spread / best_ask * 100) if best_ask > 0 else 0
+                
+                # Calculate depth
+                bid_depth = sum([qty for _, qty in bids[:20]])  # Top 20 levels
+                ask_depth = sum([qty for _, qty in asks[:20]])
+                
+                return {
+                    'best_bid': best_bid,
+                    'best_ask': best_ask,
+                    'spread': spread,
+                    'spread_percent': spread_percent,
+                    'bid_depth': bid_depth,
+                    'ask_depth': ask_depth,
+                    'depth_ratio': bid_depth / ask_depth if ask_depth > 0 else 0,
+                    'bids': bids[:10],  # Top 10 for display
+                    'asks': asks[:10]
+                }
+            
+            return {}
+        except Exception as e:
+            logger.error(f"Error fetching order book depth: {e}")
+            return {}
+    
+    def get_account_info(self) -> dict:
+        """Get account information (requires authenticated API)"""
+        if not ENABLE_ACCOUNT_INFO or not API_AUTHENTICATED:
+            return {}
+        
+        try:
+            self._rate_limit_check()
+            url = f"{BINANCE_SPOT_URL}/account"
+            params = {"timestamp": int(time.time() * 1000)}
+            params["signature"] = self._create_signature(params)
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Filter balances with actual amounts
+            balances = []
+            for balance in data.get('balances', []):
+                free = float(balance['free'])
+                locked = float(balance['locked'])
+                if free > 0 or locked > 0:
+                    balances.append({
+                        'asset': balance['asset'],
+                        'free': free,
+                        'locked': locked,
+                        'total': free + locked
+                    })
+            
+            return {
+                'balances': balances,
+                'makerCommission': data.get('makerCommission', 0),
+                'takerCommission': data.get('takerCommission', 0),
+                'canTrade': data.get('canTrade', False),
+                'canWithdraw': data.get('canWithdraw', False),
+                'canDeposit': data.get('canDeposit', False)
+            }
+        except Exception as e:
+            logger.error(f"Error fetching account info: {e}")
+            return {}
+
+# Initialize enhanced Binance fetcher
+binance_fetcher = BinanceDataFetcher()
+
 class TurboPerformanceEngine:
     def __init__(self):
         self.cache = {}
-        self.cache_timeout = 30  # 30 seconds cache
+        self.cache_timeout = 30  # 30 seconds cache for OHLCV
+        self.realtime_cache_timeout = 5  # 5 seconds for real-time data
         self.executor = ThreadPoolExecutor(max_workers=4)
         
     @lru_cache(maxsize=100)
@@ -93,9 +291,9 @@ class TurboPerformanceEngine:
                 logger.info(f"📈 Using cached data for {symbol} (age: {current_time - cache_time:.1f}s)")
                 return cached_data
         
-        # Fetch new data
+        # Fetch new data using enhanced Binance fetcher
         try:
-            url = "https://api.binance.com/api/v3/klines"
+            url = f"{BINANCE_SPOT_URL}/klines"
             interval_map = {'15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d'}
             
             params = {
@@ -104,7 +302,10 @@ class TurboPerformanceEngine:
                 'limit': limit
             }
             
-            response = requests.get(url, params=params, timeout=5)
+            # Use enhanced fetcher with rate limiting
+            binance_fetcher._rate_limit_check()
+            response = binance_fetcher.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
             data = response.json()
             
             df = pd.DataFrame(data, columns=[
@@ -130,6 +331,34 @@ class TurboPerformanceEngine:
         except Exception as e:
             logger.error(f"OHLCV fetch error for {symbol}: {e}")
             return self._get_fallback_data(symbol)
+    
+    def get_enhanced_market_data(self, symbol: str) -> dict:
+        """Get enhanced real-time market data"""
+        cache_key = f"enhanced_{symbol}"
+        current_time = time.time()
+        
+        # Check cache for real-time data
+        if cache_key in self.cache:
+            cached_data, cache_time = self.cache[cache_key]
+            if current_time - cache_time < self.realtime_cache_timeout:
+                return cached_data
+        
+        enhanced_data = {}
+        
+        # Get enhanced ticker data
+        if ENABLE_24H_TICKER_STATS:
+            ticker_data = binance_fetcher.get_enhanced_ticker_data(symbol)
+            enhanced_data.update(ticker_data)
+        
+        # Get order book depth
+        if ENABLE_ORDER_BOOK_DEPTH:
+            depth_data = binance_fetcher.get_order_book_depth(symbol)
+            enhanced_data['orderbook'] = depth_data
+        
+        # Cache the enhanced data
+        self.cache[cache_key] = (enhanced_data, current_time)
+        
+        return enhanced_data
     
     def _get_fallback_data(self, symbol: str) -> pd.DataFrame:
         """Fallback synthetic data for testing"""
@@ -1032,6 +1261,45 @@ CORS(app)
 
 # Initialize engines
 turbo_engine = TurboAnalysisEngine()
+
+@app.route('/api/realtime/<symbol>')
+def get_realtime_data(symbol):
+    """API endpoint for enhanced real-time market data"""
+    try:
+        start_time = time.time()
+        
+        # Validate symbol
+        symbol = symbol.upper()
+        
+        # Get enhanced market data
+        enhanced_data = turbo_engine.performance_engine.get_enhanced_market_data(symbol)
+        
+        # Get account info if enabled and authenticated
+        account_info = {}
+        if ENABLE_ACCOUNT_INFO and API_AUTHENTICATED:
+            account_info = binance_fetcher.get_account_info()
+        
+        execution_time = time.time() - start_time
+        
+        return jsonify({
+            'symbol': symbol,
+            'timestamp': datetime.now().isoformat(),
+            'enhanced_data': enhanced_data,
+            'account_info': account_info,
+            'api_status': {
+                'authenticated': API_AUTHENTICATED,
+                'features': {
+                    'ticker_stats': ENABLE_24H_TICKER_STATS,
+                    'order_book': ENABLE_ORDER_BOOK_DEPTH,
+                    'account_info': ENABLE_ACCOUNT_INFO and API_AUTHENTICATED
+                }
+            },
+            'execution_time': execution_time
+        })
+        
+    except Exception as e:
+        logger.error(f"Real-time data error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/')
 def dashboard():
